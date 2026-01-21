@@ -42,7 +42,7 @@ class ApprovalService:
         self.repo.save_instance(instance_row)
 
         # 4. 保存任务节点
-        task_list = approval_instance.get("task_list", []) or []
+        task_list = approval_instance.get("task_list") or []
         self.repo.save_tasks(instance_code, task_list)
 
         # 5. 保存表单字段
@@ -58,18 +58,24 @@ class ApprovalService:
     @staticmethod
     def _build_instance_row(approval_instance: Dict[str, Any]) -> Dict[str, Any]:
         """
-        构建审批实例表字段
+        构建 lark_approval_instance 表字段
         """
         return {
             "instance_code": approval_instance.get("instance_code"),
             "approval_code": approval_instance.get("approval_code"),
             "approval_name": approval_instance.get("approval_name"),
             "status": approval_instance.get("status"),
+
+            # ✅ 关键修正：这两个字段之前根本没传
+            "applicant_user_id": approval_instance.get("user_id"),
+            "department_id": approval_instance.get("department_id"),
+
             "start_time": approval_instance.get("start_time"),
             "end_time": approval_instance.get("end_time"),
-            "user_id": approval_instance.get("user_id"),
+
             "create_time": approval_instance.get("start_time"),
-            "update_time": approval_instance.get("end_time") or approval_instance.get("start_time"),
+            "update_time": approval_instance.get("end_time")
+            or approval_instance.get("start_time"),
         }
 
     @staticmethod
@@ -99,8 +105,8 @@ class ApprovalService:
                 "field_id": f.get("id"),
                 "field_name": f.get("name"),
                 "field_type": f.get("type"),
-                # value 统一存 JSON 字符串，避免类型不一致
-                "field_value": json.dumps(f.get("value"), ensure_ascii=False)
+                # value 统一存 JSON，避免结构不一致
+                "field_value": json.dumps(f.get("value"), ensure_ascii=False),
             })
 
         return result
