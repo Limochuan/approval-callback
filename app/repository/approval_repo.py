@@ -6,19 +6,12 @@
 2. 不关心 FastAPI / HTTP / 飞书校验
 3. 不做业务判断，不解析 JSON 结构
 4. 所有方法由 service 层调用
-
-对应数据表：
-- lark_approval_raw          原始回调 / 拉取数据
-- lark_approval_instance     审批实例主表
-- lark_approval_task         审批节点 / 任务
-- lark_approval_form_field   表单字段数据
 """
 
 import json
-import pymysql
 from typing import Dict, List, Any
 
-from app.db.mysql import get_mysql_conn
+from app.db.mysql import get_conn
 
 
 class ApprovalRepository:
@@ -30,20 +23,12 @@ class ApprovalRepository:
         """
         初始化数据库连接
         """
-        self.conn = get_mysql_conn()
+        self.conn = get_conn()
 
     # =========================
     # 1. 原始审批数据（兜底）
     # =========================
     def save_raw_data(self, instance_code: str, raw_data: Dict[str, Any]):
-        """
-        保存飞书返回的完整原始 JSON 数据
-        用于：
-        - 数据追溯
-        - 审计
-        - 以后补字段
-        """
-
         sql = """
         INSERT INTO lark_approval_raw (
             instance_code,
@@ -63,17 +48,10 @@ class ApprovalRepository:
                 ),
             )
 
-        self.conn.commit()
-
     # =========================
     # 2. 审批实例主表
     # =========================
     def save_instance(self, instance: Dict[str, Any]):
-        """
-        保存审批实例主信息
-        instance 为 service / parser 层整理后的 dict
-        """
-
         sql = """
         INSERT INTO lark_approval_instance (
             instance_code,
@@ -111,17 +89,10 @@ class ApprovalRepository:
                 ),
             )
 
-        self.conn.commit()
-
     # =========================
     # 3. 审批任务 / 节点
     # =========================
     def save_tasks(self, instance_code: str, tasks: List[Dict[str, Any]]):
-        """
-        保存审批节点 / 任务列表
-        一个审批实例通常会有多个 task
-        """
-
         if not tasks:
             return
 
@@ -158,19 +129,10 @@ class ApprovalRepository:
                     ),
                 )
 
-        self.conn.commit()
-
     # =========================
     # 4. 表单字段数据
     # =========================
-    def save_form_fields(
-        self, instance_code: str, fields: List[Dict[str, Any]]
-    ):
-        """
-        保存审批表单字段
-        一个审批实例通常会有很多字段
-        """
-
+    def save_form_fields(self, instance_code: str, fields: List[Dict[str, Any]]):
         if not fields:
             return
 
@@ -199,5 +161,3 @@ class ApprovalRepository:
                         field.get("field_value"),
                     ),
                 )
-
-        self.conn.commit()
