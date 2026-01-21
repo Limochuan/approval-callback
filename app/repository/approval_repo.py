@@ -1,10 +1,14 @@
 """
 审批数据写入数据库的仓储层（Repository）
+
+职责：
+1. 只负责 MySQL 数据写入 / 更新
+2. 不做业务判断
+3. 不解析 JSON 结构
 """
 
 import json
 from typing import Dict, List, Any
-
 from app.db.mysql import get_conn
 
 
@@ -20,17 +24,30 @@ class ApprovalRepository:
         sql = """
         INSERT INTO lark_approval_raw (
             instance_code,
+            approval_code,
+            status,
+            event_type,
             raw_json
         )
-        VALUES (%s, %s)
+        VALUES (%s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
+            status = VALUES(status),
+            event_type = VALUES(event_type),
             raw_json = VALUES(raw_json)
         """
+
         with self.conn.cursor() as cursor:
             cursor.execute(
                 sql,
-                (instance_code, json.dumps(raw_data, ensure_ascii=False)),
+                (
+                    instance_code,
+                    raw_data.get("approval_code"),
+                    raw_data.get("status"),
+                    "approval_instance",
+                    json.dumps(raw_data, ensure_ascii=False),
+                ),
             )
+        self.conn.commit()
 
     # =========================
     # 2. 审批实例主表
@@ -55,6 +72,7 @@ class ApprovalRepository:
             end_time = VALUES(end_time),
             update_time = VALUES(update_time)
         """
+
         with self.conn.cursor() as cursor:
             cursor.execute(
                 sql,
@@ -71,9 +89,10 @@ class ApprovalRepository:
                     instance.get("update_time"),
                 ),
             )
+        self.conn.commit()
 
     # =========================
-    # 3. 审批任务 / 节点（关键修复）
+    # 3. 审批任务节点
     # =========================
     def save_tasks(self, instance_code: str, tasks: List[Dict[str, Any]]):
         if not tasks:
@@ -81,16 +100,18 @@ class ApprovalRepository:
 
         sql = """
         INSERT INTO lark_approval_task (
-            instance_code,
             task_id,
+            instance_code,
+            node_id,
             node_name,
             node_type,
-            status,
             user_id,
+            open_id,
+            status,
             start_time,
             end_time
         )
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         ON DUPLICATE KEY UPDATE
             status = VALUES(status),
             end_time = VALUES(end_time)
@@ -101,16 +122,19 @@ class ApprovalRepository:
                 cursor.execute(
                     sql,
                     (
+                        task.get("id"),
                         instance_code,
-                        task.get("id"),          # ✅ 修复点
+                        task.get("node_id"),
                         task.get("node_name"),
                         task.get("type"),
-                        task.get("status"),
                         task.get("user_id"),
+                        task.get("open_id"),
+                        task.get("status"),
                         task.get("start_time"),
                         task.get("end_time"),
                     ),
                 )
+        self.conn.commit()
 
     # =========================
     # 4. 表单字段
@@ -138,9 +162,10 @@ class ApprovalRepository:
                     sql,
                     (
                         instance_code,
-                        field.get("field_id"),
-                        field.get("field_name"),
-                        field.get("field_type"),
-                        field.get("field_value"),
+                        field["field_id"],
+                        field["field_name"],
+                        field["field_type"],
+                        field["field_value"],
                     ),
                 )
+        self.conn.commit()
