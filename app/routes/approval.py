@@ -1,142 +1,89 @@
-import os
 import json
-import requests
-from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
-
-from app.utils.approval_parser import parse_approval_form
-
-router = APIRouter()
-
-# =========================
-# 飞书应用配置（从环境变量读取）
-# =========================
-LARK_APP_ID = os.getenv("LARK_APP_ID")
-LARK_APP_SECRET = os.getenv("LARK_APP_SECRET")
-
-LARK_TOKEN_URL = "https://open.larksuite.com/open-apis/auth/v3/app_access_token/internal"
-LARK_APPROVAL_INSTANCE_URL = "https://open.larksuite.com/open-apis/approval/v4/instances"
 
 
-# =========================
-# 获取 app_access_token
-# =========================
-def get_app_access_token() -> str:
+def parse_approval_form(form_raw):
     """
-    使用 app_id 和 app_secret 换取 app_access_token
-    该 token 用于后续调用审批实例接口
+    将飞书审批 form 字段解析为干净、可用的 dict 结构
     """
 
-    payload = {
-        "app_id": LARK_APP_ID,
-        "app_secret": LARK_APP_SECRET
-    }
+    if not form_raw:
+        return {}
 
-    resp = requests.post(LARK_TOKEN_URL, json=payload, timeout=10)
+    # 飞书这里给的是字符串 JSON，必须先反序列化
+    if isinstance(form_raw, str):
+        form_items = json.loads(form_raw)
+    else:
+        form_items = form_raw
 
-    print("==== 获取 app_access_token 返回 ====")
-    print(f"STATUS: {resp.status_code}")
-    print(f"RAW RESPONSE: {resp.text}")
+    result = {}
+    items = []
+    total_amount = None
 
-    resp.raise_for_status()
-    data = resp.json()
+    for field in form_items:
+        field_name = field.get("name", "").strip()
+        field_type = field.get("type")
+        value = field.get("value")
 
-    return data["app_access_token"]
+        # 申请日期 / 编号 / 普通输入
+        if field_type in ("date", "serialNumber", "input", "text"):
+            result[normalize_name(field_name)] = value
+
+        # 申请人
+        elif field_type == "contact":
+            result["申请人"] = {
+                "user_id": value[0] if value else None,
+                "open_id": field.get("open_ids", [None])[0]
+            }
+
+        # 部门
+        elif field_type == "department":
+            dept = value[0] if value else {}
+            result["部门"] = {
+                "name": dept.get("name"),
+                "open_id": dept.get("open_id")
+            }
+
+        # 物品明细（fieldList）
+        elif field_type == "fieldList":
+            for row in value:
+                item = {}
+                for cell in row:
+                    name = normalize_name(cell.get("name", ""))
+                    ctype = cell.get("type")
+                    cvalue = cell.get("value")
+
+                    if ctype == "number":
+                        item[name] = int(cvalue)
+                    elif ctype == "amount":
+                        item[name] = int(cvalue)
+                    elif ctype == "image":
+                        item[name] = cvalue or []
+                    else:
+                        item[name] = cvalue
+
+                items.append(item)
+
+        # 总金额
+        elif field_type == "formula":
+            total_amount = value
+
+    if items:
+        result["物品明细"] = items
+
+    if total_amount is not None:
+        result["总金额"] = total_amount
+
+    return result
 
 
-# =========================
-# 获取审批实例详情
-# =========================
-def get_approval_instance(instance_code: str, token: str) -> dict:
+def normalize_name(name: str) -> str:
     """
-    根据 instance_code 获取审批实例完整数据
+    统一字段名，去掉中英文混杂说明
     """
-
-    url = f"{LARK_APPROVAL_INSTANCE_URL}/{instance_code}"
-    headers = {
-        "Authorization": f"Bearer {token}"
-    }
-
-    resp = requests.get(url, headers=headers, timeout=10)
-
-    print("==== 飞书审批实例接口返回 ====")
-    print(f"请求 URL: {url}")
-    print(f"HTTP 状态码: {resp.status_code}")
-    print(f"响应 Header: {resp.headers}")
-    print(f"原始响应内容: {resp.text}")
-
-    resp.raise_for_status()
-    return resp.json()["data"]
-
-
-# =========================
-# 审批回调入口
-# =========================
-@router.post("/approval/callback")
-async def approval_callback(request: Request):
-    """
-    飞书审批回调统一入口
-    """
-
-    try:
-        body = await request.json()
-
-        print("==== 收到审批回调（原始数据） ====")
-        print(json.dumps(body, indent=2, ensure_ascii=False))
-
-        # 回调基础字段
-        event_type = body.get("type")
-        status = body.get("status")
-        instance_code = body.get("instance_code")
-        approval_code = body.get("approval_code")
-        uuid = body.get("uuid")
-
-        print("=================================")
-        print(f"event_type: {event_type}")
-        print(f"status: {status}")
-        print(f"approval_code: {approval_code}")
-        print(f"instance_code: {instance_code}")
-        print(f"uuid: {uuid}")
-        print("=================================")
-
-        # 只处理审批实例 & 已通过
-        if event_type != "approval_instance" or status != "APPROVED":
-            return JSONResponse({"msg": "忽略非审批通过事件"})
-
-        # 获取 token
-        token = get_app_access_token()
-
-        # 拉取完整审批实例
-        approval_instance = get_approval_instance(instance_code, token)
-
-        print("\n==== 审批实例完整数据（飞书 API 返回） ====")
-        print(json.dumps(approval_instance, indent=2, ensure_ascii=False))
-        print("==========================================\n")
-
-        # =========================
-        # 解析表单（关键步骤）
-        # =========================
-        parsed_form = parse_approval_form(approval_instance.get("form"))
-
-        print("==== 审批表单字段（解析后） ====")
-        print(json.dumps(parsed_form, indent=2, ensure_ascii=False))
-        print("================================")
-
-        # 这里以后可以：
-        # - 写数据库
-        # - 调 ERP
-        # - 推送 Teams / 邮件
-        # - 发 MQ / Webhook
-
-        return JSONResponse({
-            "msg": "审批回调处理成功",
-            "data": parsed_form
-        })
-
-    except Exception as e:
-        print("==== 审批回调处理异常 ====")
-        print(str(e))
-        return JSONResponse(
-            status_code=500,
-            content={"error": str(e)}
-        )
+    name = name.replace("申请日期", "").replace("编号", "")
+    name = name.replace("物品名称", "物品名称")
+    name = name.replace("详细规格", "规格")
+    name = name.replace("购买数量", "数量")
+    name = name.replace("单价", "单价")
+    name = name.replace("总计金额", "总金额")
+    return name.strip()
