@@ -1,89 +1,83 @@
-import json
+from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
+import datetime
+import traceback
+
+from app.services.approval_service import get_approval_instance
+from app.utils.approval_parser import parse_approval_form
+
+# FastAPI 路由对象，main.py 就是 import 的这个
+router = APIRouter()
 
 
-def parse_approval_form(form_raw):
+@router.post("/approval/callback")
+async def approval_callback(request: Request):
     """
-    将飞书审批 form 字段解析为干净、可用的 dict 结构
+    飞书审批回调入口
     """
+    try:
+        # 读取回调原始 JSON
+        data = await request.json()
 
-    if not form_raw:
-        return {}
+        print("\n==== 收到审批回调（原始） ====")
+        print(data)
+        print("=================================\n")
 
-    # 飞书这里给的是字符串 JSON，必须先反序列化
-    if isinstance(form_raw, str):
-        form_items = json.loads(form_raw)
-    else:
-        form_items = form_raw
+        approval_code = data.get("approval_code")
+        instance_code = data.get("instance_code")
+        status = data.get("status")
+        event_type = data.get("type")
+        uuid = data.get("uuid")
 
-    result = {}
-    items = []
-    total_amount = None
+        print("event_type:", event_type)
+        print("status:", status)
+        print("approval_code:", approval_code)
+        print("instance_code:", instance_code)
+        print("uuid:", uuid)
+        print("=================================\n")
 
-    for field in form_items:
-        field_name = field.get("name", "").strip()
-        field_type = field.get("type")
-        value = field.get("value")
+        if not instance_code:
+            raise ValueError("instance_code 为空，无法拉取审批实例")
 
-        # 申请日期 / 编号 / 普通输入
-        if field_type in ("date", "serialNumber", "input", "text"):
-            result[normalize_name(field_name)] = value
+        # 二次拉取完整审批实例
+        approval_instance = get_approval_instance(instance_code)
 
-        # 申请人
-        elif field_type == "contact":
-            result["申请人"] = {
-                "user_id": value[0] if value else None,
-                "open_id": field.get("open_ids", [None])[0]
+        print("\n==== 审批实例完整数据（飞书 API 返回） ====")
+        print(approval_instance)
+        print("==========================================\n")
+
+        # 解析 form 字段为 dict
+        form_raw = approval_instance.get("form")
+        form_data = parse_approval_form(form_raw)
+
+        print("\n==== 审批表单字段（解析后） ====")
+        print(form_data)
+        print("================================\n")
+
+        # 这里以后可以：
+        # - 写数据库
+        # - 对接 ERP / Dynamics
+        # - 推送 Teams / 飞书消息
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "code": 0,
+                "msg": "received",
+                "timestamp": datetime.datetime.now().isoformat()
             }
+        )
 
-        # 部门
-        elif field_type == "department":
-            dept = value[0] if value else {}
-            result["部门"] = {
-                "name": dept.get("name"),
-                "open_id": dept.get("open_id")
+    except Exception as e:
+        print("\n==== 回调处理异常 ====")
+        print(e)
+        traceback.print_exc()
+
+        return JSONResponse(
+            status_code=500,
+            content={
+                "code": -1,
+                "msg": "callback error",
+                "error": str(e)
             }
-
-        # 物品明细（fieldList）
-        elif field_type == "fieldList":
-            for row in value:
-                item = {}
-                for cell in row:
-                    name = normalize_name(cell.get("name", ""))
-                    ctype = cell.get("type")
-                    cvalue = cell.get("value")
-
-                    if ctype == "number":
-                        item[name] = int(cvalue)
-                    elif ctype == "amount":
-                        item[name] = int(cvalue)
-                    elif ctype == "image":
-                        item[name] = cvalue or []
-                    else:
-                        item[name] = cvalue
-
-                items.append(item)
-
-        # 总金额
-        elif field_type == "formula":
-            total_amount = value
-
-    if items:
-        result["物品明细"] = items
-
-    if total_amount is not None:
-        result["总金额"] = total_amount
-
-    return result
-
-
-def normalize_name(name: str) -> str:
-    """
-    统一字段名，去掉中英文混杂说明
-    """
-    name = name.replace("申请日期", "").replace("编号", "")
-    name = name.replace("物品名称", "物品名称")
-    name = name.replace("详细规格", "规格")
-    name = name.replace("购买数量", "数量")
-    name = name.replace("单价", "单价")
-    name = name.replace("总计金额", "总金额")
-    return name.strip()
+        )
